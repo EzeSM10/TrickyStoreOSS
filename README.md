@@ -6,6 +6,64 @@ A fully open-source, FOSS alternative to the proprietary [TrickyStore](https://g
 
 ---
 
+## Android Canary compatibility fork
+
+This fork adds a Binder interception fix for Android Canary builds that combine
+`libbinder.so` and `libutils.so` into `libcore_bundle.so`. It is based on upstream
+**v3.1.0 (41383f5)** and addresses the failure reported in
+[upstream issue #107](https://github.com/beakthoven/TrickyStoreOSS/issues/107).
+
+### What failed
+
+On a Pixel 8 (`shiba`) running Canary `ZP11.260918.007`, the original module logged:
+
+```text
+Failed to find libbinder.so via dl_iterate_phdr
+Binder interception initialization failed
+```
+
+`/system/lib64/libbinder.so` and `libutils.so` are symlinks to
+`libcore_bundle.so` on that build. The dynamic linker exposes the loaded bundle
+under its real name, so searching loaded objects only for `libbinder.so` fails.
+The bundle still exposes the Binder symbols and imported `ioctl` relocation
+needed by the interceptor.
+
+### How it was fixed
+
+In [`binder_interceptor.cpp`](app/src/main/cpp/binder_interceptor.cpp), initialization
+first looks for `libbinder.so`, preserving the original path. If it cannot find
+that object, it tries `libcore_bundle.so` and installs the existing `ioctl` PLT
+hook there. It logs the selected library and reports a clear error if neither
+object is available. No changes were made to the Java daemon or attestation
+configuration.
+
+### Validation and result
+
+- Built the ARM64 native library with Android NDK **29.0.14206865** and matching
+  `org.lsposed.libcxx:libcxx`.
+- Verified the bundle's required symbols and `ioctl` PLT relocation.
+- Tested hook installation/removal and the complete library entry point in
+  isolated processes on the Pixel 8 using the probes in [`tests/`](tests/).
+- Verified ARM64 ELF format, 16 KiB load-segment alignment, and package CRCs.
+- Installed the experimental module and rebooted. Live logs showed Binder
+  calls being intercepted.
+- The device owner reported passing **BASIC, DEVICE, and STRONG** after the fix,
+  using their existing keybox, configuration, and other installed modules.
+
+This is a result from one device and build, not a guarantee for other setups or
+future Play Integrity verdicts. No keybox, private keys, device backups, or user
+configuration are included in this repository.
+
+### Build and package
+
+See [`CANARY-FIX.md`](CANARY-FIX.md) for native build instructions. The experimental
+flashable package reuses the official v3.1.0 ZIP, replaces its ARM64 native library,
+labels the module as experimental, restricts installation to ARM64, and removes
+the upstream update feed to avoid automatically replacing this custom build.
+The original installer preserves existing configuration.
+
+---
+
 ## Why this exists
 
 TrickyStore's author has a track record of [violations and questionable practices](docs/5ec1cff-violations.md)
